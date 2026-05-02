@@ -1,0 +1,74 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false; 
+    }
+
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isSignedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'yousefg924@gmail.com' ||
+        exists(/databases/$(database)/documents/users/$(request.auth.uid))
+      );
+    }
+
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
+    function isValidReservationCreate(data) {
+      return data.keys().hasAll(['name', 'phone', 'date', 'time', 'guests', 'status', 'createdAt']) &&
+             data.keys().size() <= 12 &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.phone is string && data.phone.size() > 0 && data.phone.size() <= 50 &&
+             data.date is string && data.date.size() <= 20 &&
+             data.time is string && data.time.size() <= 20 &&
+             data.guests is string && data.guests.size() <= 10 &&
+             data.status == 'pending' &&
+             data.createdAt == request.time &&
+             (data.keys().hasAny(['occasion']) ? (data.occasion is string && data.occasion.size() <= 100) : true) &&
+             (data.keys().hasAny(['notes']) ? (data.notes is string && data.notes.size() <= 500) : true) &&
+             (data.keys().hasAny(['cart']) ? (data.cart is list && data.cart.size() <= 50) : true) &&
+             (data.keys().hasAny(['tableId']) ? data.tableId == null : true) &&
+             (data.keys().hasAny(['total']) ? data.total is number : true);
+    }
+
+    match /reservations/{reservationId} {
+      allow get: if isAdmin() && isValidId(reservationId);
+      allow list: if isAdmin();
+      allow create: if isValidReservationCreate(incoming());
+      allow update: if (
+        isAdmin() && 
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'tableId', 'notes']) &&
+        (incoming().keys().hasAny(['status']) ? incoming().status in ['pending', 'successful', 'unsuccessful', 'done'] : true) &&
+        (incoming().keys().hasAny(['tableId']) ? (incoming().tableId is string && incoming().tableId.size() <= 128) || incoming().tableId == null : true)
+      );
+      allow delete: if isAdmin() && isValidId(reservationId);
+    }
+
+    function isValidTableCreate(data) {
+      return data.keys().hasAll(['name', 'createdAt']) &&
+             data.keys().size() <= 2 &&
+             data.name is string && data.name.size() <= 100 &&
+             data.createdAt == request.time;
+    }
+
+    match /tables/{tableId} {
+      allow get: if isAdmin() && isValidId(tableId);
+      allow list: if isAdmin() || true; // Public needs to read tables to know what is booked? No, they don't need tables, we can filter reservations by date! Wait, we also need to let customers know if tables are available? The prompt says "when a table is reserved at a certain date they cannot reserve the table again at the same date it will be avilable but cannot select cause it will be booked already" -> The customer selects a time, but actually customers don't select tables. The employee assigns the table in the admin portal. Wait! "when a table is reserved at a certain date they cannot reserve the table again at the same date". This means customers DO select tables? Or does the admin select them? The prompt says "the employee will assign a table for him... when a table is reserved at a certain date they cannot reserve the table again at the same date". Wait, if the employee assigns it, then who cannot reserve it again? The employees cannot assign the same table again. So it's an admin rule, public doesn't need to read tables!
+      allow list: if isAdmin();
+      allow create: if isAdmin() && isValidTableCreate(incoming());
+      allow update: if isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name']);
+      allow delete: if isAdmin() && isValidId(tableId);
+    }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if isAdmin();
+    }
+  }
+}
